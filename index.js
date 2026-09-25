@@ -79,15 +79,14 @@ const client = new MongoClient(uri, {
     }
 });
 
-app.get('/test', (req, res) => {
-  res.send('TEST ROUTE WORKING');
-});
+
 
 async function run() {
     try {
         // Connect the client to the server	(optional starting in v4.7)
-        console.log('Mongo connected');
         await client.connect();
+
+        console.log("MongoDB connected successfully");
 
 
         const db = client.db("StyleDecoreProject")
@@ -761,8 +760,9 @@ run().catch(console.dir);
 app.get('/', (req, res) => {
     res.send('running style server!')
 })
+module.exports = app;
 
-app.listen(port, () => {
-  console.log(`Serverrr running on port ${port}`);
-});
+// app.listen(port, () => {
+//   console.log(`Serverrr running on port ${port}`);
+// });
 
