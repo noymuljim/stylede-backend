@@ -133,14 +133,40 @@ async function run() {
 
         })
         //decorators
-        app.post('/decorators', async (req, res) => {
-            const decorator = req.body;
-            decorator.status = 'pending';
-            decorator.createdAt = new Date();
 
-            const result = await decoratorCollection.insertOne(decorator);
-            res.send(result)
-        })
+        app.post('/decorators', async (req, res) => {
+            try {
+                const decorator = req.body;
+                const email = decorator.decoratorEmail;
+
+                if (!email) {
+                    return res.status(400).send({ message: 'Email is required.' });
+                }
+
+                const existingDecorator = await decoratorCollection.findOne({ decoratorEmail: email });
+
+                if (existingDecorator) {
+                    return res.status(409).send({
+                        message: 'You have already submitted a decorator application.',
+                        status: existingDecorator.status
+                    });
+                }
+
+                decorator.status = 'pending';
+                decorator.createdAt = new Date();
+
+                const result = await decoratorCollection.insertOne(decorator);
+
+                res.status(201).send({
+                    message: 'Decorator application submitted successfully.',
+                    insertedId: result.insertedId
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
+            }
+        });
+
 
 
         app.get('/decorators', async (req, res) => {
@@ -281,7 +307,7 @@ async function run() {
             }
             if (bookingStatus) {
                 query.bookingStatus = bookingStatus
-                // query.bookingStatus = { $nin: ['Completed'] }
+
             }
 
             else {
@@ -404,20 +430,6 @@ async function run() {
         })
 
 
-        app.get('/bookings/today-schedule', async (req, res) => {
-            const { decoratorEmail } = req.query;
-
-            const today = new Date().toISOString().split('T')[0];
-
-            const result = await bookingCollection.find({
-                decoratorEmail,
-                date: today
-            }).toArray();
-
-            res.send(result);
-        });
-
-
         //user API
         app.post('/users', async (req, res) => {
             const user = req.body
@@ -512,7 +524,11 @@ async function run() {
 
         // services API
         app.post('/services', async (req, res) => {
-            const service = req.body
+            const service = {
+                ...req.body,
+                createdAt: new Date()
+
+            }
 
             const result = await serviceCollection.insertOne(service)
             res.send(result)
@@ -520,7 +536,7 @@ async function run() {
 
 
         app.get('/services', async (req, res) => {
-            const result = await serviceCollection.find().limit(6).toArray();
+            const result = await serviceCollection.find().limit(3).toArray();
             res.send(result);
         });
         app.get('/allServices', async (req, res) => {
@@ -528,11 +544,10 @@ async function run() {
             const query = {};
 
             if (searchText) {
-                query.serviceName = { $regex: searchText, $options: 'i' };
-
+                query.serviceCategory = { $regex: searchText, $options: 'i' };
             }
 
-            const result = await serviceCollection.find(query).toArray();
+            const result = await serviceCollection.find(query).sort({ createdAt: -1 }).toArray();
             res.send(result);
         });
 
@@ -558,131 +573,146 @@ async function run() {
 
 
         //payment API
+        //payment API
         app.post('/create-checkout-session', async (req, res) => {
-            const paymentInfo = req.body;
-            const amount = parseInt(paymentInfo.cost) * 100
+            try {
+                const paymentInfo = req.body;
+                const amount = Math.round(Number(paymentInfo.cost) * 100);
 
-            const session = await stripe.checkout.sessions.create({
-                line_items: [
-                    {
-                        price_data: {
-                            currency: 'USD',
-                            unit_amount: amount,
-                            product_data: {
-                                name: paymentInfo.serviceName
+                if (!amount || amount <= 0) {
+                    return res.status(400).send({ message: 'Invalid cost' });
+                }
+
+                const session = await stripe.checkout.sessions.create({
+                    line_items: [
+                        {
+                            price_data: {
+                                currency: 'usd',
+                                unit_amount: amount,
+                                product_data: {
+                                    name: paymentInfo.serviceName
+                                },
                             },
+                            quantity: 1,
                         },
-
-                        quantity: 1,
+                    ],
+                    customer_email: paymentInfo.userEmail,
+                    mode: 'payment',
+                    metadata: {
+                        bookingId: paymentInfo.bookingId,
+                        serviceName: paymentInfo.serviceName,
+                        trackingId: paymentInfo.trackingId
                     },
-                ],
-                customer_email: paymentInfo.userEmail,
-                mode: 'payment',
-                metadata: {
-                    bookingId: paymentInfo.bookingId,
-                    serviceName: paymentInfo.serviceName,
-                    trackingId: paymentInfo.trackingId
+                    success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+                });
+
+                res.send({ url: session.url });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
+            }
+        });
 
 
-                },
-                success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-                cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
-            });
-            console.log(session)
-            res.send({ url: session.url })
-        })
-
+        const DECORATOR_RATE = 0.9; // decorator 90%, admin 10%
 
         app.patch('/payment-success', async (req, res) => {
-            const sessionId = req.query.session_id;
-            const session = await stripe.checkout.sessions.retrieve(sessionId);
+            try {
+                const sessionId = req.query.session_id;
+                const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-            console.log(sessionId);
-
-            const transactionId = session.payment_intent;
-            const query = { transactionId: transactionId }
-
-            const paymentExist = await paymentCollection.findOne(query)
-
-            if (paymentExist) {
-                return res.send({
-                    messsage: 'already exist', transactionId,
-                    trackingId: paymentExist.trackingId
-                })
-            }
-
-
-
-            // const trackingId = generateTrackingId()
-            const trackingId = session.metadata.trackingId
-
-
-            if (session.payment_status === "paid") {
-                const id = session.metadata.bookingId;
-                const query = { _id: new ObjectId(id) }
-                const update = {
-                    $set: {
-                        paymentStatus: 'paid',
-                        trackingId: trackingId,
-                        bookingStatus: 'panding_assign'
-
-
-
-                    }
+                if (session.payment_status !== 'paid') {
+                    return res.send({ success: false });
                 }
-                const result = await bookingCollection.updateOne(query, update)
 
+                const transactionId = session.payment_intent;
+                const trackingId = session.metadata.trackingId;
+                const bookingId = session.metadata.bookingId;
 
+                const paymentExist = await paymentCollection.findOne({ transactionId });
+                if (paymentExist) {
+                    return res.send({
+                        success: true,
+                        message: 'already exist',
+                        transactionId,
+                        trackingId: paymentExist.trackingId
+                    });
+                }
+
+                // split in cents, no float error
+                const totalCents = session.amount_total;
+                const decoratorCents = Math.round(totalCents * DECORATOR_RATE);
+                const adminCents = totalCents - decoratorCents;
+
+                const total = totalCents / 100;
+                const decoratorEarning = decoratorCents / 100;
+                const adminEarning = adminCents / 100;
 
                 const payment = {
-                    amount: session.amount_total / 100,
+                    amount: total,
+                    decoratorEarning,
+                    adminEarning,
                     curency: session.currency,
                     customerEmail: session.customer_email,
-                    bookingId: session.metadata.bookingId,
+                    bookingId,
                     serviceName: session.metadata.serviceName,
-
-                    transactionId: session.payment_intent,
-
+                    transactionId,
                     paymentStatus: session.payment_status,
                     paidAt: new Date(),
-                    trackingId: trackingId,
+                    trackingId
+                };
 
-
-
-                }
-                if (session.payment_status === 'paid') {
-                    const resultPayment = await paymentCollection.insertOne(payment)
-
-
-                    // logTracking(trackingId, 'panding_assign')
-
-                    const trackingExist = await trackingsCollection.findOne({
-                        trackingId: trackingId,
-                        status: 'booking_paid'
-                    });
-
-                    if (!trackingExist) {
-                        await logTracking(trackingId, 'booking_paid');
+                // insert first: unique index on transactionId block duplicate
+                let resultPayment;
+                try {
+                    resultPayment = await paymentCollection.insertOne(payment);
+                } catch (err) {
+                    if (err.code === 11000) {
+                        return res.send({
+                            success: true,
+                            message: 'already exist',
+                            transactionId,
+                            trackingId
+                        });
                     }
-
-
-
-                    res.send({
-                        success: true,
-                        modifyParcel: result,
-                        paymentInfo: resultPayment,
-                        trackingId: trackingId,
-                        transactionId: session.payment_intent
-                    })
+                    throw err;
                 }
 
+                const bookingResult = await bookingCollection.updateOne(
+                    { _id: new ObjectId(bookingId) },
+                    {
+                        $set: {
+                            paymentStatus: 'paid',
+                            trackingId,
+                            bookingStatus: 'panding_assign',
+                            decoratorEarning,
+                            adminEarning
+                        }
+                    }
+                );
+
+                const trackingExist = await trackingsCollection.findOne({
+                    trackingId,
+                    status: 'booking_paid'
+                });
+                if (!trackingExist) {
+                    await logTracking(trackingId, 'booking_paid');
+                }
+
+                res.send({
+                    success: true,
+                    modifyParcel: bookingResult,
+                    paymentInfo: resultPayment,
+                    trackingId,
+                    transactionId,
+                    split: { decorator: decoratorEarning, admin: adminEarning }
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
             }
-
-
-
-
-            res.send({ success: false })
-        })
+        });
 
 
 
@@ -709,39 +739,79 @@ async function run() {
 
 
         //admin earning
-        app.get('/bookings/admin/earnings', async (req, res) => {
-            const completedBookings = await bookingCollection.find({ bookingStatus: 'Completed' }).toArray();
+        app.get('/admin/earnings-summary', verifyFBToken, verifyAdmin, async (req, res) => {
+            try {
+                const [r] = await paymentCollection.aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            adminEarning: {
+                                $sum: {
+                                    $ifNull: [
+                                        '$adminEarning',
+                                        { $ifNull: ['$adminShare', { $multiply: ['$amount', 0.1] }] }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                ]).toArray();
 
-            res.send(completedBookings);
+                res.send({ adminEarning: Number((r?.adminEarning || 0).toFixed(2)) });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
+            }
         });
 
-        //pipeline
 
-        app.get('/bookings/booking-status/stats', async (req, res) => {
-            const pipeline = [
-                {
-                    $match: {
-                        bookingStatus: { $ne: null }
-                    }
-                },
-                {
-                    $group: {
-                        _id: '$bookingStatus',
-                        count: { $sum: 1 }
-                    }
-                },
-                {
-                    $project: {
-                        status: '$_id',
-                        count: 1,
+        //
+        app.get('/decorator/stats', verifyFBToken, async (req, res) => {
+            try {
+                const decoratorEmail = req.decodedEmail;
 
+                const [stats] = await bookingCollection.aggregate([
+                    { $match: { decoratorEmail } },
+                    {
+                        $group: {
+                            _id: null,
+                            totalAssigned: { $sum: 1 },
+                            completed: {
+                                $sum: { $cond: [{ $eq: ['$bookingStatus', 'Completed'] }, 1, 0] }
+                            },
+                            earnings: {
+                                $sum: {
+                                    $cond: [
+                                        { $eq: ['$bookingStatus', 'Completed'] },
+                                        {
+                                            $ifNull: [
+                                                '$decoratorEarning',
+                                                {
+                                                    $multiply: [
+                                                        { $convert: { input: '$cost', to: 'double', onError: 0, onNull: 0 } },
+                                                        0.9
+                                                    ]
+                                                }
+                                            ]
+                                        },
+                                        0
+                                    ]
+                                }
+                            }
+                        }
                     }
-                }
-            ]
-            const result = await bookingCollection.aggregate(pipeline).toArray();
-            res.send(result)
-        })
+                ]).toArray();
 
+                res.send({
+                    totalAssigned: stats?.totalAssigned || 0,
+                    completed: stats?.completed || 0,
+                    earnings: stats?.earnings || 0
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
+            }
+        });
 
 
 
@@ -760,9 +830,9 @@ run().catch(console.dir);
 app.get('/', (req, res) => {
     res.send('running style server!')
 })
-module.exports = app;
 
-// app.listen(port, () => {
-//   console.log(`Serverrr running on port ${port}`);
-// });
+
+app.listen(port, () => {
+    console.log(`Serverrr running on port ${port}`);
+});
 
