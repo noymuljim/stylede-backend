@@ -47,6 +47,7 @@ const verifyFBToken = async (req, res, next) => {
     const token = req.headers.authorization;
 
     if (!token) {
+        console.error('verifyFBToken: no Authorization header');
         return res.status(401).send({ message: 'unauthorize access' })
     }
 
@@ -58,11 +59,10 @@ const verifyFBToken = async (req, res, next) => {
         next()
     }
     catch (err) {
+        console.error('verifyIdToken failed:', err.code, err.message);
         return res.status(401).send({ message: 'unauthorize access' })
     }
-
 }
-
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@simple-curd-server.rjfvned.mongodb.net/?appName=simple-curd-server`;
 
