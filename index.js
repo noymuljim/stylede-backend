@@ -44,10 +44,7 @@ app.use(cors())
 //middle 2
 
 const verifyFBToken = async (req, res, next) => {
-    console.log('header from middle= ', req.headers.authorization)
-
     const token = req.headers.authorization;
-
 
     if (!token) {
         return res.status(401).send({ message: 'unauthorize access' })
@@ -56,7 +53,6 @@ const verifyFBToken = async (req, res, next) => {
     try {
         const tokenId = token.split(' ')[1]
         const decoded = await admin.auth().verifyIdToken(tokenId)
-        console.log('decoded in token', decoded)
 
         req.decodedEmail = decoded.email
         next()
@@ -83,11 +79,8 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        // Connect the client to the server	(optional starting in v4.7)
-        await client.connect();
-
-        console.log("MongoDB connected successfully");
-
+        // no client.connect() here. Driver connect on first query.
+        // Routes register sync → safe on Vercel cold start.
 
         const db = client.db("StyleDecoreProject")
         const serviceCollection = db.collection('services')
@@ -200,7 +193,7 @@ async function run() {
                 };
 
                 if (status === 'approved') {
-                    setFields.approvedAt = new Date();  
+                    setFields.approvedAt = new Date();
                 }
 
                 const result = await decoratorCollection.updateOne(query, { $set: setFields });
@@ -235,7 +228,7 @@ async function run() {
 
             booking.trackingId = trackingId
 
-            logTracking(trackingId, 'booking_created');
+            await logTracking(trackingId, 'booking_created');
             const result = await bookingCollection.insertOne(booking)
             res.send(result)
 
@@ -393,7 +386,7 @@ async function run() {
                 }
             }
             const decoratorResult = await decoratorCollection.updateOne(decoratorQuery, decoratorUpdatedDoc);
-            logTracking(trackingId, 'decorator_assigned')
+            await logTracking(trackingId, 'decorator_assigned')
 
             res.send(decoratorResult)
         })
@@ -425,7 +418,7 @@ async function run() {
 
             }
             const result = await bookingCollection.updateOne(query, updatedDoc)
-            logTracking(trackingId, bookingStatus)
+            await logTracking(trackingId, bookingStatus)
             res.send(result)
 
 
@@ -575,7 +568,6 @@ async function run() {
 
 
         //payment API
-        //payment API
         app.post('/create-checkout-session', async (req, res) => {
             try {
                 const paymentInfo = req.body;
@@ -721,9 +713,6 @@ async function run() {
         app.get('/payments', verifyFBToken, async (req, res) => {
             const email = req.query.email;
             const query = {}
-            // console.log("headers: ", req.headers)
-
-
 
             if (email) {
                 query.customerEmail = email;
@@ -815,7 +804,7 @@ async function run() {
             }
         });
 
-        //
+
         //admin weekly stats
         app.get('/admin/weekly-stats', verifyFBToken, verifyAdmin, async (req, res) => {
             try {
@@ -884,7 +873,11 @@ app.get('/', (req, res) => {
 })
 
 
-app.listen(port, () => {
-    console.log(`Serverrr running on port ${port}`);
-});
+// local only. Vercel no need listen.
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(port, () => {
+        console.log(`Serverrr running on port ${port}`);
+    });
+}
 
+module.exports = app;
