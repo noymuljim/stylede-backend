@@ -109,7 +109,6 @@ async function run() {
             next()
         }
 
-
         //function
 
         const logTracking = async (trackingId, status) => {
@@ -190,32 +189,36 @@ async function run() {
             res.send(result)
         })
         app.patch('/decorators/:id', verifyFBToken, verifyAdmin, async (req, res) => {
-            const id = req.params.id;
-            const query = { _id: new ObjectId(id) }
+            try {
+                const id = req.params.id;
+                const query = { _id: new ObjectId(id) };
+                const status = req.body.status;
 
-            const status = req.body.status;
-            const updatedDoc = {
-                $set: {
-                    status: status,
-                    workStatus: 'available'
+                const setFields = {
+                    status,
+                    workStatus: 'available',
+                };
+
+                if (status === 'approved') {
+                    setFields.approvedAt = new Date();  
                 }
-            }
-            const result = await decoratorCollection.updateOne(query, updatedDoc);
 
+                const result = await decoratorCollection.updateOne(query, { $set: setFields });
 
-
-            if (status === 'approved') {
-                const email = req.body.email;
-                const userQuery = { email }
-                const updateUser = {
-                    $set: {
-                        role: 'decorator'
-                    }
+                if (status === 'approved') {
+                    const email = req.body.email;
+                    await userCollection.updateOne(
+                        { email },
+                        { $set: { role: 'decorator' } }
+                    );
                 }
-                const userResult = await userCollection.updateOne(userQuery, updateUser)
+
+                res.send(result);
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
             }
-            res.send(result);
-        })
+        });
         app.delete('/decorators/:id', verifyFBToken, async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) };
@@ -357,7 +360,6 @@ async function run() {
         });
 
 
-        // 
 
         app.delete('/bookings/:id', async (req, res) => {
             const id = req.params.id
@@ -765,7 +767,7 @@ async function run() {
         });
 
 
-        //
+        //aggrigation
         app.get('/decorator/stats', verifyFBToken, async (req, res) => {
             try {
                 const decoratorEmail = req.decodedEmail;
@@ -813,12 +815,62 @@ async function run() {
             }
         });
 
+        //
+        //admin weekly stats
+        app.get('/admin/weekly-stats', verifyFBToken, verifyAdmin, async (req, res) => {
+            try {
+                const TZ = 'Asia/Dhaka'; // UTC+6, no DST
+                const dayKey = (d) =>
+                    new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(d); // YYYY-MM-DD
+
+                // start of day, 6 days ago (Dhaka) → 7 calendar days incl today
+                const sixAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
+                const since = new Date(`${dayKey(sixAgo)}T00:00:00+06:00`);
+
+                const groupByDay = (field) => [
+                    { $match: { [field]: { $gte: since } } },
+                    {
+                        $group: {
+                            _id: { $dateToString: { format: '%Y-%m-%d', date: `$${field}`, timezone: TZ } },
+                            count: { $sum: 1 },
+                        },
+                    },
+                ];
+
+                const [userRows, decoratorRows] = await Promise.all([
+                    userCollection.aggregate(groupByDay('createdAt')).toArray(),
+                    decoratorCollection
+                        .aggregate([{ $match: { status: 'approved' } }, ...groupByDay('approvedAt')])
+                        .toArray(),
+                ]);
+
+                const userMap = Object.fromEntries(userRows.map((r) => [r._id, r.count]));
+                const decoMap = Object.fromEntries(decoratorRows.map((r) => [r._id, r.count]));
+
+                const daily = [];
+                for (let i = 0; i < 7; i++) {
+                    const d = new Date(since.getTime() + i * 24 * 60 * 60 * 1000);
+                    const key = dayKey(d);
+                    daily.push({
+                        date: key,
+                        label: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: TZ }),
+                        users: userMap[key] || 0,
+                        decorators: decoMap[key] || 0,
+                    });
+                }
+
+                res.send({
+                    newUsers: daily.reduce((s, x) => s + x.users, 0),
+                    approvedDecorators: daily.reduce((s, x) => s + x.decorators, 0),
+                    daily,
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: 'Internal server error' });
+            }
+        });
 
 
-
-        // Send a ping to confirm a successful connection
-        // await client.db("admin").command({ ping: 1 });
-        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
         // Ensures that the client will close when you finish/error
         // await client.close();
